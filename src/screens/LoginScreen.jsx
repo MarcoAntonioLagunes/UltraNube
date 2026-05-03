@@ -85,6 +85,9 @@ export default function LoginScreen() {
         </div>
 
         <div className="authFooter">
+          <button type="button" className="ghostButton" style={{ fontSize: '0.88rem', marginBottom: 12 }} onClick={() => navigate('/forgot-password')}>
+            ¿Olvidaste tu contraseña?
+          </button>
           <p>¿No tienes cuenta?</p>
           <button type="button" className="secondaryButton" onClick={() => navigate('/register')}>
             Crear Cuenta
