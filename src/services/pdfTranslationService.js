@@ -1,26 +1,15 @@
 // src/services/pdfTranslationService.js
 //
-// Strategy: extract → group → translate → generate brand-new PDF
+// PDF translation pipeline:
+//   1. pdfjs-dist  — extract plain text from each page (respects line breaks via hasEOL)
+//   2. batchTranslateTexts — translate each page as a coherent unit via Claude
+//   3. buildTextPdf — generate a brand-new, clean, fully-readable PDF with NotoSans
 //
-//   1. pdfjs-dist  — extract text items (x, y, fontSize) from every page
-//   2. buildTextBlocks — merge per-glyph items into logical word/phrase blocks
-//   3. batchTranslateTexts — translate each block via Claude
-//   4. pdf-lib     — create a FRESH PDF document (same page dimensions as original)
-//                    and draw every translated block with NotoSans at the
-//                    original coordinates.
-//
-// WHY a fresh PDF instead of modifying the original:
-//   PDF fonts use custom encoding vectors (CID, Type3, proprietary glyph maps).
-//   Painting white rectangles over existing glyphs and re-drawing with a new font
-//   causes the underlying encoded bytes to still render as garbled characters.
-//   Starting from a blank document avoids all encoding conflicts entirely.
-//
-// Trade-off: images, backgrounds, and decorative vector graphics from the
-//   original PDF are not preserved.  Text layout and positions ARE preserved.
-//
-// Limitations:
-//   • Arabic renders LTR without glyph shaping — pdf-lib has no bidi engine.
-//   • Scanned PDFs (image-only) have no selectable text and will fail clearly.
+// Why we stopped trying to preserve the original layout:
+//   PDF fonts use proprietary encoding vectors (CID, Type1, Type3, custom ToUnicode maps).
+//   Any attempt to copy glyph positions from the original and redraw with a different font
+//   produces garbled output ("u c v" etc.) because glyph IDs don't map to Unicode 1-to-1.
+//   The only reliable approach is: extract text → translate → build a new PDF from scratch.
 
 import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import fontkit from '@pdf-lib/fontkit';
@@ -37,7 +26,6 @@ const DEFAULT_FONT = '/fonts/NotoSans-Regular.woff'; // Latin + Cyrillic + Greek
 
 const CJK_LANGS = new Set(['Japonés', 'Chino', 'Coreano']);
 
-// Session-level font cache
 const _fontCache = new Map();
 async function fetchFontBytes(path) {
   if (_fontCache.has(path)) return _fontCache.get(path);
@@ -48,169 +36,69 @@ async function fetchFontBytes(path) {
   return buf;
 }
 
-// ── Merge per-glyph items → logical text blocks ───────────────────────────────
-// pdfjs returns one item per PDF text operator, often a single character.
-// We merge adjacent items on the same baseline so each block maps to one
-// drawText() call, letting the font handle kerning correctly.
-function buildTextBlocks(items) {
-  if (!items.length) return [];
-
-  // Sort: page asc → y desc (top of page first in PDF space) → x asc
-  const sorted = [...items].sort((a, b) => {
-    if (a.pageIndex !== b.pageIndex) return a.pageIndex - b.pageIndex;
-    if (Math.abs(a.y - b.y) > 2)    return b.y - a.y;
-    return a.x - b.x;
-  });
-
-  const blocks = [];
-  let cur = null;
-
-  for (const item of sorted) {
-    const itemW = item.width > 0
-      ? item.width
-      : item.fontSize * item.str.length * 0.55;
-
-    if (!cur) {
-      cur = { pageIndex: item.pageIndex, str: item.str, x: item.x, y: item.y, endX: item.x + itemW, fontSize: item.fontSize };
-      continue;
-    }
-
-    const samePage = cur.pageIndex === item.pageIndex;
-    const sameLine = Math.abs(cur.y - item.y) < Math.max(cur.fontSize, item.fontSize) * 0.5;
-    const gap      = item.x - cur.endX;
-    const adjacent = gap < cur.fontSize * 2 && gap > -cur.fontSize;
-
-    if (samePage && sameLine && adjacent) {
-      if (gap > cur.fontSize * 0.15) cur.str += ' ';
-      cur.str  += item.str;
-      cur.endX  = Math.max(cur.endX, item.x + itemW);
-      cur.fontSize = Math.max(cur.fontSize, item.fontSize);
-    } else {
-      blocks.push({ ...cur, width: cur.endX - cur.x });
-      cur = { pageIndex: item.pageIndex, str: item.str, x: item.x, y: item.y, endX: item.x + itemW, fontSize: item.fontSize };
-    }
+// ── Extract readable text from a pdfjs page ───────────────────────────────────
+// Uses item.hasEOL to reconstruct natural line breaks instead of joining
+// everything into one long string that loses paragraph structure.
+function extractPageText(contentItems) {
+  let text = '';
+  for (const item of contentItems) {
+    if (!item.str) continue;
+    text += item.str;
+    if (item.hasEOL) text += '\n';
   }
-  if (cur) blocks.push({ ...cur, width: cur.endX - cur.x });
-  return blocks;
+  return text.replace(/[ \t]+/g, ' ').trim();
 }
 
-// ── Main translation function ─────────────────────────────────────────────────
+// ── PDF translation ───────────────────────────────────────────────────────────
 
 export async function translatePdfWithLayout(blob, targetLang, onProgress) {
-  // ── 1. Extract raw text items + page dimensions ───────────────────────────
+  // ── 1. Extract text page by page ──────────────────────────────────────────
   onProgress?.('Extrayendo texto del PDF…');
 
   const pdfjs = await import('pdfjs-dist');
   const pdfjsLib = pdfjs.default ?? pdfjs;
   pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
-  const rawBuffer = await blob.arrayBuffer();
+  const buffer = await blob.arrayBuffer();
   let viewerDoc;
   try {
-    viewerDoc = await pdfjsLib.getDocument({ data: new Uint8Array(rawBuffer) }).promise;
+    viewerDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
   } catch (err) {
     throw new Error(`No se puede leer el PDF: ${err.message}`);
   }
 
-  const rawItems      = [];
-  const pageDimensions = [];
-
+  const pageTexts = [];
   for (let p = 1; p <= viewerDoc.numPages; p++) {
     const page    = await viewerDoc.getPage(p);
-    // page.view = [x0, y0, x1, y1] in PDF user-space (points)
-    const [vx0, vy0, vx1, vy1] = page.view;
-    pageDimensions.push({ width: vx1 - vx0, height: vy1 - vy0 });
-
     const content = await page.getTextContent();
-    for (const item of content.items) {
-      if (!item.str || !item.str.trim()) continue;
-      const [a, b, , d, x, y] = item.transform;
-      const fontSize = item.height > 0
-        ? item.height
-        : Math.max(Math.abs(d), Math.sqrt(a * a + b * b), 8);
-      rawItems.push({
-        pageIndex: p - 1,
-        str: item.str,
-        x, y,
-        width: item.width,
-        fontSize: Math.max(4, fontSize),
-      });
-    }
+    const text    = extractPageText(content.items);
+    if (text) pageTexts.push(text);
   }
 
-  if (rawItems.length === 0) {
+  if (pageTexts.length === 0) {
     throw new Error(
       'No se encontró texto seleccionable en este PDF. ' +
-      'Los PDFs escaneados (basados en imágenes) no son compatibles con la traducción.'
+      'Los PDFs escaneados (solo imágenes) no son compatibles con la traducción.'
     );
   }
 
-  // ── 2. Group per-glyph items into logical blocks ──────────────────────────
-  const textBlocks = buildTextBlocks(rawItems);
+  // ── 2. Translate each page as a coherent unit ─────────────────────────────
+  onProgress?.(`Traduciendo ${pageTexts.length} página(s) al ${targetLang}…`);
 
-  // ── 3. Translate ──────────────────────────────────────────────────────────
-  onProgress?.(`Traduciendo ${textBlocks.length} bloques al ${targetLang}…`);
-  const originals        = textBlocks.map((b) => b.str);
-  const translatedStrings = await batchTranslateTexts({ texts: originals, targetLang });
+  const translatedPages   = await batchTranslateTexts({ texts: pageTexts, targetLang });
+  const translatedText    = translatedPages.filter(Boolean).join('\n\n');
 
-  // ── 4. Load Unicode font ──────────────────────────────────────────────────
-  onProgress?.('Cargando fuente Unicode…');
-  const fontBytes = await fetchFontBytes(FONT_PATH[targetLang] ?? DEFAULT_FONT);
+  // ── 3. Generate clean PDF ─────────────────────────────────────────────────
+  onProgress?.('Generando PDF limpio…');
 
-  // ── 5. Build fresh PDF ────────────────────────────────────────────────────
-  onProgress?.('Generando PDF traducido…');
+  const pdfBlob = await buildTextPdf(translatedText, targetLang);
 
-  const { PDFDocument, rgb } = await import('pdf-lib');
-  const newDoc = await PDFDocument.create();
-  newDoc.registerFontkit(fontkit);
-  const font = await newDoc.embedFont(fontBytes, { subset: true });
-
-  // Create one blank white page per original page, same dimensions
-  const pdfPages = pageDimensions.map(({ width, height }) => {
-    const page = newDoc.addPage([width, height]);
-    page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(1, 1, 1) });
-    return page;
-  });
-
-  // Draw each translated block at the original coordinates
-  for (let i = 0; i < textBlocks.length; i++) {
-    const block = textBlocks[i];
-    const page  = pdfPages[block.pageIndex];
-    if (!page) continue;
-
-    const tStr = String(translatedStrings[i] ?? block.str).trim();
-    if (!tStr) continue;
-
-    // Shrink font size proportionally if translated text overflows original width
-    let finalSize = block.fontSize;
-    if (block.width > 0) {
-      const tw = font.widthOfTextAtSize(tStr, finalSize);
-      if (tw > block.width * 1.05) {
-        finalSize = Math.max(4, finalSize * (block.width / tw));
-      }
-    }
-
-    try {
-      page.drawText(tStr, {
-        x:    block.x,
-        y:    block.y,
-        size: finalSize,
-        font,
-        color: rgb(0, 0, 0),
-      });
-    } catch {
-      // Skip blocks with out-of-bounds coordinates or unsupported characters
-    }
-  }
-
-  const bytes = await newDoc.save();
-  return {
-    blob: new Blob([bytes], { type: 'application/pdf' }),
-    translatedText: translatedStrings.filter(Boolean).join(' '),
-  };
+  return { blob: pdfBlob, translatedText };
 }
 
-// ── Plain-text → PDF with Unicode font ───────────────────────────────────────
+// ── Plain-text / translated-text → clean PDF ─────────────────────────────────
+// Used both by translatePdfWithLayout (PDF sources) and TranslatorAgent
+// (TXT/MD sources). Produces a fully readable A4 document with NotoSans.
 
 export async function buildTextPdf(text, targetLang) {
   const fontBytes = await fetchFontBytes(FONT_PATH[targetLang] ?? DEFAULT_FONT);
@@ -220,18 +108,23 @@ export async function buildTextPdf(text, targetLang) {
   doc.registerFontkit(fontkit);
   const font = await doc.embedFont(fontBytes, { subset: true });
 
-  const PAGE_W  = 595.28;
-  const PAGE_H  = 841.89;
-  const MARGIN  = 50;
+  const PAGE_W  = 595.28;   // A4 width in points
+  const PAGE_H  = 841.89;   // A4 height in points
+  const MARGIN  = 55;
   const FONT_SZ = 11;
-  const LINE_H  = FONT_SZ * 1.6;
+  const LINE_H  = FONT_SZ * 1.65;
   const MAX_W   = PAGE_W - MARGIN * 2;
   const isCJK   = CJK_LANGS.has(targetLang);
 
+  // Wrap each paragraph into display lines
   const allLines = [];
   for (const para of text.split('\n')) {
-    if (!para.trim()) { allLines.push(''); continue; }
+    if (!para.trim()) {
+      allLines.push(''); // blank line between paragraphs
+      continue;
+    }
     if (isCJK) {
+      // CJK has no word separators — wrap character by character
       let line = '';
       for (const ch of para) {
         const test = line + ch;
@@ -244,6 +137,7 @@ export async function buildTextPdf(text, targetLang) {
       }
       if (line) allLines.push(line);
     } else {
+      // Word-by-word wrap for Latin, Cyrillic, Arabic
       let line = '';
       for (const word of para.split(' ')) {
         const test = line ? `${line} ${word}` : word;
@@ -260,9 +154,15 @@ export async function buildTextPdf(text, targetLang) {
 
   let page = doc.addPage([PAGE_W, PAGE_H]);
   let y    = PAGE_H - MARGIN;
+
   for (const line of allLines) {
-    if (y < MARGIN + LINE_H) { page = doc.addPage([PAGE_W, PAGE_H]); y = PAGE_H - MARGIN; }
-    if (line) page.drawText(line, { x: MARGIN, y, size: FONT_SZ, font, color: rgb(0, 0, 0) });
+    if (y < MARGIN + LINE_H) {
+      page = doc.addPage([PAGE_W, PAGE_H]);
+      y    = PAGE_H - MARGIN;
+    }
+    if (line) {
+      page.drawText(line, { x: MARGIN, y, size: FONT_SZ, font, color: rgb(0.05, 0.05, 0.05) });
+    }
     y -= LINE_H;
   }
 
