@@ -316,6 +316,17 @@ const api = {
     } catch (error) { throw new Error(getErrorMessage(error)); }
   },
 
+  async extractPdfText(blob) {
+    try {
+      const form = new FormData();
+      form.append('pdf', blob, 'file.pdf');
+      const res = await apiClient.post('/api/files/extract-pdf-text', form);
+      return res.data; // { text, pages }
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  },
+
   async uploadFileWithProgress(file, folderId = null, onProgress) {
     try {
       const form = new FormData();

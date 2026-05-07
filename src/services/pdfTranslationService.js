@@ -1,19 +1,15 @@
 // src/services/pdfTranslationService.js
 //
 // PDF translation pipeline:
-//   1. pdfjs-dist  — extract plain text from each page (respects line breaks via hasEOL)
+//   1. backend /api/files/extract-pdf-text — Node.js pdf-parse handles custom font
+//      encodings (CID, Type1, ToUnicode maps) much better than pdfjs in the browser.
+//      Returns pages[] split on form-feed characters.
 //   2. batchTranslateTexts — translate each page as a coherent unit via Claude
 //   3. buildTextPdf — generate a brand-new, clean, fully-readable PDF with NotoSans
-//
-// Why we stopped trying to preserve the original layout:
-//   PDF fonts use proprietary encoding vectors (CID, Type1, Type3, custom ToUnicode maps).
-//   Any attempt to copy glyph positions from the original and redraw with a different font
-//   produces garbled output ("u c v" etc.) because glyph IDs don't map to Unicode 1-to-1.
-//   The only reliable approach is: extract text → translate → build a new PDF from scratch.
 
-import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import fontkit from '@pdf-lib/fontkit';
 import { batchTranslateTexts } from './anthropicService';
+import api from './api';
 
 // Language name → WOFF font in /public/fonts/
 const FONT_PATH = {
@@ -36,46 +32,21 @@ async function fetchFontBytes(path) {
   return buf;
 }
 
-// ── Extract readable text from a pdfjs page ───────────────────────────────────
-// Uses item.hasEOL to reconstruct natural line breaks instead of joining
-// everything into one long string that loses paragraph structure.
-function extractPageText(contentItems) {
-  let text = '';
-  for (const item of contentItems) {
-    if (!item.str) continue;
-    text += item.str;
-    if (item.hasEOL) text += '\n';
-  }
-  return text.replace(/[ \t]+/g, ' ').trim();
-}
-
 // ── PDF translation ───────────────────────────────────────────────────────────
 
 export async function translatePdfWithLayout(blob, targetLang, onProgress) {
-  // ── 1. Extract text page by page ──────────────────────────────────────────
+  // ── 1. Extract text via backend (pdf-parse handles encoding correctly) ────
   onProgress?.('Extrayendo texto del PDF…');
 
-  const pdfjs = await import('pdfjs-dist');
-  const pdfjsLib = pdfjs.default ?? pdfjs;
-  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
-
-  const buffer = await blob.arrayBuffer();
-  let viewerDoc;
+  let pages;
   try {
-    viewerDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+    const result = await api.extractPdfText(blob);
+    pages = result.pages; // string[] — one entry per page
   } catch (err) {
-    throw new Error(`No se puede leer el PDF: ${err.message}`);
+    throw new Error(`No se pudo extraer el texto del PDF: ${err.message}`);
   }
 
-  const pageTexts = [];
-  for (let p = 1; p <= viewerDoc.numPages; p++) {
-    const page    = await viewerDoc.getPage(p);
-    const content = await page.getTextContent();
-    const text    = extractPageText(content.items);
-    if (text) pageTexts.push(text);
-  }
-
-  if (pageTexts.length === 0) {
+  if (!pages || pages.length === 0) {
     throw new Error(
       'No se encontró texto seleccionable en este PDF. ' +
       'Los PDFs escaneados (solo imágenes) no son compatibles con la traducción.'
@@ -83,10 +54,10 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
   }
 
   // ── 2. Translate each page as a coherent unit ─────────────────────────────
-  onProgress?.(`Traduciendo ${pageTexts.length} página(s) al ${targetLang}…`);
+  onProgress?.(`Traduciendo ${pages.length} página(s) al ${targetLang}…`);
 
-  const translatedPages   = await batchTranslateTexts({ texts: pageTexts, targetLang });
-  const translatedText    = translatedPages.filter(Boolean).join('\n\n');
+  const translatedPages = await batchTranslateTexts({ texts: pages, targetLang });
+  const translatedText  = translatedPages.filter(Boolean).join('\n\n');
 
   // ── 3. Generate clean PDF ─────────────────────────────────────────────────
   onProgress?.('Generando PDF limpio…');
