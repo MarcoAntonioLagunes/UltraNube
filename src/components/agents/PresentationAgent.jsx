@@ -179,6 +179,7 @@ export default function PresentationAgent({ file, folderId, onClose, onSuccess }
 
       saveHistory({ fileName: file.name, style, slideCount, date: new Date().toLocaleDateString('es-MX') });
       setHistory(loadHistory());
+      api.logActivity('present', file.name, { style, slideCount });
       setToast({ message: '📊 Presentación generada y guardada', type: 'success' });
       setStep('preview');
       onSuccess?.();

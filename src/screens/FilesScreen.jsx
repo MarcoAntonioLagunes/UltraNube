@@ -69,6 +69,48 @@ export default function FilesScreen() {
   const [modalInput, setModalInput] = useState('');
   const [starredIds, setStarredIds] = useState(new Set(getStarredItems().map((item) => item.id)));
 
+  // ── Drag & drop ──────────────────────────────────────────────────────────
+  const [dragOver, setDragOver] = useState(false);
+  const [uploadQueue, setUploadQueue] = useState([]); // [{ name, progress, status }]
+  const dragCounter = useState(0);
+
+  const handleDragEnter = (e) => {
+    e.preventDefault();
+    dragCounter[0]++;
+    if (e.dataTransfer.types.includes('Files')) setDragOver(true);
+  };
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    dragCounter[0]--;
+    if (dragCounter[0] <= 0) { dragCounter[0] = 0; setDragOver(false); }
+  };
+  const handleDragOver = (e) => { e.preventDefault(); };
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    dragCounter[0] = 0;
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (!files.length) return;
+
+    const queue = files.map(f => ({ name: f.name, progress: 0, status: 'pending' }));
+    setUploadQueue(queue);
+
+    for (let i = 0; i < files.length; i++) {
+      setUploadQueue(q => q.map((item, idx) => idx === i ? { ...item, status: 'uploading' } : item));
+      try {
+        await api.uploadFileWithProgress(files[i], currentFolderId, (pct) => {
+          setUploadQueue(q => q.map((item, idx) => idx === i ? { ...item, progress: pct } : item));
+        });
+        setUploadQueue(q => q.map((item, idx) => idx === i ? { ...item, progress: 100, status: 'done' } : item));
+      } catch {
+        setUploadQueue(q => q.map((item, idx) => idx === i ? { ...item, status: 'error' } : item));
+      }
+    }
+
+    await loadItems(currentFolderId);
+    setTimeout(() => setUploadQueue([]), 2000);
+  };
+
   // ── Agent state ──────────────────────────────────────────────────────────
   const [contextMenu, setContextMenu] = useState(null); // { x, y, item }
   const [translatorFile, setTranslatorFile] = useState(null);
@@ -335,9 +377,45 @@ export default function FilesScreen() {
             </div>
           </aside>
 
-          <main className={styles.mainPanel}>
+          <main
+            className={`${styles.mainPanel} ${dragOver ? styles.mainPanelDragOver : ''}`}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+          >
+            {dragOver && (
+              <div className={styles.dropOverlay}>
+                <div className={styles.dropOverlayInner}>
+                  <div className={styles.dropIcon}>☁️</div>
+                  <p className={styles.dropMsg}>Suelta los archivos aquí para subir</p>
+                </div>
+              </div>
+            )}
+
+            {uploadQueue.length > 0 && (
+              <div className={styles.uploadQueue}>
+                {uploadQueue.map((item, i) => (
+                  <div key={i} className={styles.uploadQueueItem}>
+                    <span className={styles.uploadQueueName}>{item.name}</span>
+                    <div className={styles.uploadQueueTrack}>
+                      <div
+                        className={`${styles.uploadQueueFill} ${item.status === 'error' ? styles.uploadQueueFillError : item.status === 'done' ? styles.uploadQueueFillDone : ''}`}
+                        style={{ width: `${item.progress}%` }}
+                      />
+                    </div>
+                    <span className={styles.uploadQueuePct}>
+                      {item.status === 'error' ? '✗' : item.status === 'done' ? '✓' : `${item.progress}%`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {filteredItems.length === 0 ? (
-              <div className={styles.messageBox}>No hay archivos ni carpetas aquí.</div>
+              <div className={styles.messageBox}>
+                {dragOver ? '' : 'No hay archivos ni carpetas aquí. Arrastra archivos para subir.'}
+              </div>
             ) : (
               <div className={styles.itemGrid}>
                 {filteredItems.map((item) => (

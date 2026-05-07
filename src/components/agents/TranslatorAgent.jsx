@@ -132,6 +132,7 @@ export default function TranslatorAgent({ file, folderId, onClose, onSuccess }) 
       const lang = LANGUAGES.find(l => l.name === targetLanguage);
       saveHistory({ fileName: file.name, targetLanguage, flag: lang?.flag || '🌐', date: new Date().toLocaleDateString('es-MX') });
       setHistory(loadHistory());
+      api.logActivity('translate', file.name, { language: targetLanguage });
       setToast({ message: `${lang?.flag || '🌐'} Traducción completada`, type: 'success' });
       setStep('done');
       onSuccess?.();

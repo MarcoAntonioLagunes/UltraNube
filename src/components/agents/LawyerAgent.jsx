@@ -89,6 +89,7 @@ export default function LawyerAgent({ file, onClose }) {
         const entry = { fileName: file.name, date: new Date().toLocaleDateString('es-MX'), risk: risk.label };
         saveHistory(entry);
         setHistory(loadHistory());
+        api.logActivity('analyze', file.name);
         setToast({ message: '⚖️ Análisis legal completado', type: 'success' });
       } catch (e) {
         if (!cancelled) setError(e.message || 'Error al analizar el documento');

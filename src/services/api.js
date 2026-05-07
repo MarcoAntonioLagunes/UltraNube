@@ -266,6 +266,50 @@ const api = {
       throw new Error(getErrorMessage(error));
     }
   },
+
+  async logActivity(action, label, metadata = {}) {
+    try {
+      await apiClient.post('/api/activities/log', { action, label, metadata });
+    } catch {
+      // non-critical
+    }
+  },
+
+  async getRecentActivity() {
+    try {
+      const res = await apiClient.get('/api/activities/recent');
+      return res.data;
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  },
+
+  async getTypeBreakdown() {
+    try {
+      const res = await apiClient.get('/api/dashboard/type-breakdown');
+      return res.data;
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  },
+
+  async uploadFileWithProgress(file, folderId = null, onProgress) {
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      if (folderId) form.append('folderId', folderId);
+      const res = await apiClient.post('/api/files/upload', form, {
+        onUploadProgress: (evt) => {
+          if (onProgress && evt.total) {
+            onProgress(Math.round((evt.loaded / evt.total) * 100));
+          }
+        },
+      });
+      return res.data;
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  },
 };
 
 export default api;

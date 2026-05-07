@@ -148,6 +148,7 @@ export default function OrganizerAgent({ onClose, onSuccess }) {
     const msg = errorCount === 0
       ? `✅ ${movedCount} archivos organizados exitosamente`
       : `✅ ${movedCount} movidos · ⚠️ ${errorCount} sin cambios`;
+    api.logActivity('organize', 'Archivos organizados', { moved: movedCount, errors: errorCount });
     setToast({ message: msg, type: errorCount === 0 ? 'success' : 'info' });
     onSuccess?.();
     onClose();

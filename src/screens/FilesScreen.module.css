@@ -186,7 +186,7 @@
 .emptyState { color: #7878a0; font-size: 0.85rem; padding: 8px 4px; }
 
 /* ── Main panel ── */
-.mainPanel { min-width: 0; }
+.mainPanel { min-width: 0; position: relative; }
 
 /* ── Item grid ── */
 .itemGrid {
@@ -480,4 +480,115 @@
     opacity: 1;
     padding: 0 14px 14px;
   }
+}
+
+/* ── Drag & drop ── */
+.mainPanelDragOver {
+  position: relative;
+}
+
+.dropOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  border-radius: 18px;
+  border: 2.5px dashed rgba(255, 45, 149, 0.7);
+  background: rgba(255, 45, 149, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  animation: dropPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes dropPulse {
+  0%, 100% { border-color: rgba(255, 45, 149, 0.7); background: rgba(255, 45, 149, 0.06); }
+  50%       { border-color: rgba(255, 45, 149, 1);   background: rgba(255, 45, 149, 0.1);  }
+}
+
+.dropOverlayInner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.dropIcon {
+  font-size: 3rem;
+  filter: drop-shadow(0 0 16px rgba(255, 45, 149, 0.6));
+  animation: dropFloat 1.8s ease-in-out infinite alternate;
+}
+
+@keyframes dropFloat {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-8px); }
+}
+
+.dropMsg {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: rgba(255, 45, 149, 0.9);
+  text-align: center;
+}
+
+/* ── Upload queue progress bars ── */
+.uploadQueue {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+
+.uploadQueueItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.uploadQueueName {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.65);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+.uploadQueueTrack {
+  width: 120px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 99px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.uploadQueueFill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #ff2d95, #a855f7);
+  transition: width 0.25s ease;
+}
+
+.uploadQueueFillDone {
+  background: linear-gradient(90deg, #22c55e, #4ade80);
+}
+
+.uploadQueueFillError {
+  background: #ff4060;
+}
+
+.uploadQueuePct {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.45);
+  min-width: 28px;
+  text-align: right;
+  flex-shrink: 0;
 }
