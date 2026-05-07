@@ -4,21 +4,50 @@
 //   1. pdfjs-dist  — extract text items with their exact (x, y, fontSize) in PDF user space
 //   2. batchTranslateTexts — translate every fragment via Claude (chunked)
 //   3. pdf-lib     — load the original PDF, paint white rectangles over old text,
-//                    draw translated text at the same coordinates with Helvetica
+//                    draw translated text at the same coordinates with a Unicode font
+//
+// Font strategy: Noto Sans WOFF files in public/fonts/ — one per script family.
+// pdf-lib's fontkit understands WOFF (zlib-compressed) and subsets glyphs used,
+// so the output PDF only contains the characters that appear in the translation.
 //
 // Limitations:
 //   • Background is assumed white; colored/dark backgrounds will show white boxes.
-//   • Helvetica replaces the original font → only Latin scripts render correctly.
-//     Japanese, Chinese, Arabic, Korean, Russian need a Unicode font embedded in pdf-lib
-//     (not implemented here).
+//   • Arabic text renders LTR without glyph shaping — pdf-lib has no bidi/shaping engine.
 //   • Scanned PDFs (image-only) have no selectable text — extraction will fail with a
 //     clear error message.
 
 import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { batchTranslateTexts } from './anthropicService';
 
+// Language name (from TranslatorAgent's LANGUAGES array) → WOFF font in /public/fonts/
+const FONT_PATH = {
+  'Japonés': '/fonts/NotoSansJP-Regular.woff',
+  'Chino':   '/fonts/NotoSansSC-Regular.woff',
+  'Coreano': '/fonts/NotoSansKR-Regular.woff',
+  'Árabe':   '/fonts/NotoSansArabic-Regular.woff',
+};
+// Covers Latin (all European languages) + Cyrillic (Russian) + Greek
+const DEFAULT_FONT = '/fonts/NotoSans-Regular.woff';
+
+// Languages that wrap text character-by-character (no word spaces)
+const CJK_LANGS = new Set(['Japonés', 'Chino', 'Coreano']);
+
+// Session-level font cache — avoids re-downloading on subsequent translations
+const _fontCache = new Map();
+
+async function fetchFontBytes(path) {
+  if (_fontCache.has(path)) return _fontCache.get(path);
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`No se pudo cargar la fuente Unicode: ${path} (${res.status})`);
+  const buf = await res.arrayBuffer();
+  _fontCache.set(path, buf);
+  return buf;
+}
+
+// ── PDF layout translation ────────────────────────────────────────────────────
+
 export async function translatePdfWithLayout(blob, targetLang, onProgress) {
-  // ── 1. Extract text items with positions ────────────────────────────────────
+  // ── 1. Extract text items with positions ──────────────────────────────────
   onProgress?.('Extrayendo texto del PDF…');
 
   const pdfjs = await import('pdfjs-dist');
@@ -73,16 +102,22 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
     );
   }
 
-  // ── 2. Batch translate ───────────────────────────────────────────────────────
+  // ── 2. Batch translate ─────────────────────────────────────────────────────
   onProgress?.(`Traduciendo ${textItems.length} fragmentos al ${targetLang}…`);
 
   const originals = textItems.map((it) => it.str);
   const translatedStrings = await batchTranslateTexts({ texts: originals, targetLang });
 
-  // ── 3. Rebuild PDF with pdf-lib ──────────────────────────────────────────────
+  // ── 3. Load Unicode font ───────────────────────────────────────────────────
+  onProgress?.('Cargando fuente Unicode…');
+
+  const fontPath  = FONT_PATH[targetLang] ?? DEFAULT_FONT;
+  const fontBytes = await fetchFontBytes(fontPath);
+
+  // ── 4. Rebuild PDF with pdf-lib ────────────────────────────────────────────
   onProgress?.('Reconstruyendo el PDF con el texto traducido…');
 
-  const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+  const { PDFDocument, rgb } = await import('pdf-lib');
 
   let pdfLibDoc;
   try {
@@ -91,7 +126,8 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
     throw new Error(`No se puede modificar el PDF: ${err.message}`);
   }
 
-  const font = await pdfLibDoc.embedFont(StandardFonts.Helvetica);
+  // subset: true — embed only the glyphs used (keeps CJK PDFs reasonable in size)
+  const font  = await pdfLibDoc.embedFont(fontBytes, { subset: true });
   const pages = pdfLibDoc.getPages();
 
   for (let i = 0; i < textItems.length; i++) {
@@ -140,7 +176,80 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
 
   return {
     blob: new Blob([bytes], { type: 'application/pdf' }),
-    // Plain text version used by the "Download as Word" button
+    // Plain text version used by the "Download as PDF/Word" buttons
     translatedText: translatedStrings.filter(Boolean).join(' '),
   };
+}
+
+// ── Plain-text → PDF with Unicode font ───────────────────────────────────────
+// Used by TranslatorAgent when the source is TXT/MD (no existing PDF structure).
+
+export async function buildTextPdf(text, targetLang) {
+  const fontPath  = FONT_PATH[targetLang] ?? DEFAULT_FONT;
+  const fontBytes = await fetchFontBytes(fontPath);
+
+  const { PDFDocument, rgb } = await import('pdf-lib');
+  const doc  = await PDFDocument.create();
+  const font = await doc.embedFont(fontBytes, { subset: true });
+
+  const PAGE_W   = 595.28;  // A4 in points
+  const PAGE_H   = 841.89;
+  const MARGIN   = 50;
+  const FONT_SZ  = 11;
+  const LINE_H   = FONT_SZ * 1.6;
+  const MAX_W    = PAGE_W - MARGIN * 2;
+  const isCJK    = CJK_LANGS.has(targetLang);
+
+  // Wrap each paragraph into display lines
+  const allLines = [];
+  for (const para of text.split('\n')) {
+    if (!para.trim()) {
+      allLines.push('');
+      continue;
+    }
+    if (isCJK) {
+      // CJK has no word separators — wrap character by character
+      let line = '';
+      for (const ch of para) {
+        const test = line + ch;
+        if (font.widthOfTextAtSize(test, FONT_SZ) > MAX_W && line) {
+          allLines.push(line);
+          line = ch;
+        } else {
+          line = test;
+        }
+      }
+      if (line) allLines.push(line);
+    } else {
+      // Western/Arabic — wrap word by word
+      let line = '';
+      for (const word of para.split(' ')) {
+        const test = line ? `${line} ${word}` : word;
+        if (font.widthOfTextAtSize(test, FONT_SZ) > MAX_W && line) {
+          allLines.push(line);
+          line = word;
+        } else {
+          line = test;
+        }
+      }
+      if (line) allLines.push(line);
+    }
+  }
+
+  let page = doc.addPage([PAGE_W, PAGE_H]);
+  let y    = PAGE_H - MARGIN;
+
+  for (const line of allLines) {
+    if (y < MARGIN + LINE_H) {
+      page = doc.addPage([PAGE_W, PAGE_H]);
+      y    = PAGE_H - MARGIN;
+    }
+    if (line) {
+      page.drawText(line, { x: MARGIN, y, size: FONT_SZ, font, color: rgb(0, 0, 0) });
+    }
+    y -= LINE_H;
+  }
+
+  const bytes = await doc.save();
+  return new Blob([bytes], { type: 'application/pdf' });
 }

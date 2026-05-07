@@ -156,20 +156,11 @@ export default function TranslatorAgent({ file, folderId, onClose, onSuccess }) 
       setToast({ message: 'PDF descargado', type: 'success' });
       return;
     }
-    const { default: jsPDF } = await import('jspdf');
-    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-    const margin = 15;
-    const maxWidth = doc.internal.pageSize.getWidth() - margin * 2;
-    const lineHeight = 7;
-    const pageHeight = doc.internal.pageSize.getHeight();
-    const lines = doc.splitTextToSize(translatedText, maxWidth);
-    let y = margin;
-    lines.forEach(line => {
-      if (y + lineHeight > pageHeight - margin) { doc.addPage(); y = margin; }
-      doc.text(line, margin, y);
-      y += lineHeight;
-    });
-    doc.save(swapExt(newFileName, 'pdf'));
+    // Use pdf-lib + Noto Sans (same Unicode font used by the PDF translator)
+    // so non-Latin scripts render correctly in the output PDF.
+    const { buildTextPdf } = await import('../../services/pdfTranslationService');
+    const pdfBlob = await buildTextPdf(translatedText, targetLanguage);
+    triggerBlobDownload(pdfBlob, swapExt(newFileName, 'pdf'));
     setToast({ message: 'PDF descargado', type: 'success' });
   };
 
