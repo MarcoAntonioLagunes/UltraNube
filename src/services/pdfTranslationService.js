@@ -17,6 +17,7 @@
 //     clear error message.
 
 import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import fontkit from '@pdf-lib/fontkit';
 import { batchTranslateTexts } from './anthropicService';
 
 // Language name (from TranslatorAgent's LANGUAGES array) → WOFF font in /public/fonts/
@@ -126,7 +127,7 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
     throw new Error(`No se puede modificar el PDF: ${err.message}`);
   }
 
-  // subset: true — embed only the glyphs used (keeps CJK PDFs reasonable in size)
+  pdfLibDoc.registerFontkit(fontkit);
   const font  = await pdfLibDoc.embedFont(fontBytes, { subset: true });
   const pages = pdfLibDoc.getPages();
 
@@ -190,6 +191,7 @@ export async function buildTextPdf(text, targetLang) {
 
   const { PDFDocument, rgb } = await import('pdf-lib');
   const doc  = await PDFDocument.create();
+  doc.registerFontkit(fontkit);
   const font = await doc.embedFont(fontBytes, { subset: true });
 
   const PAGE_W   = 595.28;  // A4 in points
