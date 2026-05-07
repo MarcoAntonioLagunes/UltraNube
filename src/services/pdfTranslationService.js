@@ -1,28 +1,32 @@
 // src/services/pdfTranslationService.js
 //
-// Translates a PDF while preserving its visual layout:
-//   1. pdfjs-dist  — extract text items (may be per-glyph) with positions
-//   2. buildTextBlocks — merge adjacent items on the same baseline into logical blocks
-//   3. batchTranslateTexts — translate each block via Claude (chunked)
-//   4. pdf-lib     — cover originals with white rects, draw translated blocks
-//                    using a Unicode WOFF font so every script renders correctly
+// Strategy: extract → group → translate → generate brand-new PDF
 //
-// Why grouping is necessary:
-//   pdfjs returns one item per PDF text operator, which is often a single character.
-//   Drawing each character independently in NotoSans (different advance widths than
-//   the original font) produces "P E S _ N A N _ A"-style spacing. By merging
-//   adjacent items into a single drawText() call we let the font handle kerning.
+//   1. pdfjs-dist  — extract text items (x, y, fontSize) from every page
+//   2. buildTextBlocks — merge per-glyph items into logical word/phrase blocks
+//   3. batchTranslateTexts — translate each block via Claude
+//   4. pdf-lib     — create a FRESH PDF document (same page dimensions as original)
+//                    and draw every translated block with NotoSans at the
+//                    original coordinates.
+//
+// WHY a fresh PDF instead of modifying the original:
+//   PDF fonts use custom encoding vectors (CID, Type3, proprietary glyph maps).
+//   Painting white rectangles over existing glyphs and re-drawing with a new font
+//   causes the underlying encoded bytes to still render as garbled characters.
+//   Starting from a blank document avoids all encoding conflicts entirely.
+//
+// Trade-off: images, backgrounds, and decorative vector graphics from the
+//   original PDF are not preserved.  Text layout and positions ARE preserved.
 //
 // Limitations:
-//   • Background assumed white — colored backgrounds show white cover rectangles.
-//   • Arabic renders LTR without shaping (pdf-lib has no bidi/HarfBuzz engine).
+//   • Arabic renders LTR without glyph shaping — pdf-lib has no bidi engine.
 //   • Scanned PDFs (image-only) have no selectable text and will fail clearly.
 
 import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import fontkit from '@pdf-lib/fontkit';
 import { batchTranslateTexts } from './anthropicService';
 
-// Language name → WOFF font served from /public/fonts/
+// Language name → WOFF font in /public/fonts/
 const FONT_PATH = {
   'Japonés': '/fonts/NotoSansJP-Regular.woff',
   'Chino':   '/fonts/NotoSansSC-Regular.woff',
@@ -33,24 +37,25 @@ const DEFAULT_FONT = '/fonts/NotoSans-Regular.woff'; // Latin + Cyrillic + Greek
 
 const CJK_LANGS = new Set(['Japonés', 'Chino', 'Coreano']);
 
+// Session-level font cache
 const _fontCache = new Map();
 async function fetchFontBytes(path) {
   if (_fontCache.has(path)) return _fontCache.get(path);
   const res = await fetch(path);
-  if (!res.ok) throw new Error(`No se pudo cargar la fuente Unicode: ${path} (${res.status})`);
+  if (!res.ok) throw new Error(`No se pudo cargar la fuente: ${path} (${res.status})`);
   const buf = await res.arrayBuffer();
   _fontCache.set(path, buf);
   return buf;
 }
 
-// ── Merge per-glyph items into drawable text blocks ───────────────────────────
-// Items on the same baseline with a small horizontal gap are merged into one block.
-// This ensures a single drawText() call per logical word/phrase, so the embedded
-// font applies its own kerning instead of relying on per-glyph PDF coordinates.
+// ── Merge per-glyph items → logical text blocks ───────────────────────────────
+// pdfjs returns one item per PDF text operator, often a single character.
+// We merge adjacent items on the same baseline so each block maps to one
+// drawText() call, letting the font handle kerning correctly.
 function buildTextBlocks(items) {
   if (!items.length) return [];
 
-  // Sort: page asc → y desc (higher y = top of page in PDF space) → x asc
+  // Sort: page asc → y desc (top of page first in PDF space) → x asc
   const sorted = [...items].sort((a, b) => {
     if (a.pageIndex !== b.pageIndex) return a.pageIndex - b.pageIndex;
     if (Math.abs(a.y - b.y) > 2)    return b.y - a.y;
@@ -61,7 +66,6 @@ function buildTextBlocks(items) {
   let cur = null;
 
   for (const item of sorted) {
-    // Some PDFs report width=0 for individual glyphs — estimate from font size
     const itemW = item.width > 0
       ? item.width
       : item.fontSize * item.str.length * 0.55;
@@ -74,12 +78,9 @@ function buildTextBlocks(items) {
     const samePage = cur.pageIndex === item.pageIndex;
     const sameLine = Math.abs(cur.y - item.y) < Math.max(cur.fontSize, item.fontSize) * 0.5;
     const gap      = item.x - cur.endX;
-    // Merge if gap is a normal inter-character or inter-word distance (< 2 em),
-    // allowing slight overlap (> -1 em) for PDFs that kern aggressively.
     const adjacent = gap < cur.fontSize * 2 && gap > -cur.fontSize;
 
     if (samePage && sameLine && adjacent) {
-      // Insert a space character when the visual gap is large enough to be a word space
       if (gap > cur.fontSize * 0.15) cur.str += ' ';
       cur.str  += item.str;
       cur.endX  = Math.max(cur.endX, item.x + itemW);
@@ -93,10 +94,10 @@ function buildTextBlocks(items) {
   return blocks;
 }
 
-// ── PDF layout translation ────────────────────────────────────────────────────
+// ── Main translation function ─────────────────────────────────────────────────
 
 export async function translatePdfWithLayout(blob, targetLang, onProgress) {
-  // ── 1. Extract raw text items ─────────────────────────────────────────────
+  // ── 1. Extract raw text items + page dimensions ───────────────────────────
   onProgress?.('Extrayendo texto del PDF…');
 
   const pdfjs = await import('pdfjs-dist');
@@ -104,79 +105,83 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
   pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
   const rawBuffer = await blob.arrayBuffer();
-  // pdfjs transfers its buffer to the Web Worker (detaching it), so pdf-lib
-  // needs its own independent copy obtained before that transfer happens.
-  const bufferForPdfjs  = rawBuffer.slice(0);
-  const bufferForPdfLib = rawBuffer.slice(0);
-
   let viewerDoc;
   try {
-    viewerDoc = await pdfjsLib.getDocument({ data: new Uint8Array(bufferForPdfjs) }).promise;
+    viewerDoc = await pdfjsLib.getDocument({ data: new Uint8Array(rawBuffer) }).promise;
   } catch (err) {
     throw new Error(`No se puede leer el PDF: ${err.message}`);
   }
 
-  const rawItems = [];
+  const rawItems      = [];
+  const pageDimensions = [];
+
   for (let p = 1; p <= viewerDoc.numPages; p++) {
     const page    = await viewerDoc.getPage(p);
-    const content = await page.getTextContent();
+    // page.view = [x0, y0, x1, y1] in PDF user-space (points)
+    const [vx0, vy0, vx1, vy1] = page.view;
+    pageDimensions.push({ width: vx1 - vx0, height: vy1 - vy0 });
 
+    const content = await page.getTextContent();
     for (const item of content.items) {
       if (!item.str || !item.str.trim()) continue;
       const [a, b, , d, x, y] = item.transform;
       const fontSize = item.height > 0
         ? item.height
         : Math.max(Math.abs(d), Math.sqrt(a * a + b * b), 8);
-      rawItems.push({ pageIndex: p - 1, str: item.str, x, y, width: item.width, fontSize: Math.max(4, fontSize) });
+      rawItems.push({
+        pageIndex: p - 1,
+        str: item.str,
+        x, y,
+        width: item.width,
+        fontSize: Math.max(4, fontSize),
+      });
     }
   }
 
   if (rawItems.length === 0) {
     throw new Error(
       'No se encontró texto seleccionable en este PDF. ' +
-      'Los PDFs escaneados (basados en imágenes) no son compatibles con la traducción de diseño.'
+      'Los PDFs escaneados (basados en imágenes) no son compatibles con la traducción.'
     );
   }
 
-  // ── 2. Merge per-glyph items into logical blocks ──────────────────────────
+  // ── 2. Group per-glyph items into logical blocks ──────────────────────────
   const textBlocks = buildTextBlocks(rawItems);
 
-  // ── 3. Batch translate ─────────────────────────────────────────────────────
+  // ── 3. Translate ──────────────────────────────────────────────────────────
   onProgress?.(`Traduciendo ${textBlocks.length} bloques al ${targetLang}…`);
-
   const originals        = textBlocks.map((b) => b.str);
   const translatedStrings = await batchTranslateTexts({ texts: originals, targetLang });
 
-  // ── 4. Load Unicode font ───────────────────────────────────────────────────
+  // ── 4. Load Unicode font ──────────────────────────────────────────────────
   onProgress?.('Cargando fuente Unicode…');
-
   const fontBytes = await fetchFontBytes(FONT_PATH[targetLang] ?? DEFAULT_FONT);
 
-  // ── 5. Rebuild PDF ─────────────────────────────────────────────────────────
-  onProgress?.('Reconstruyendo el PDF con el texto traducido…');
+  // ── 5. Build fresh PDF ────────────────────────────────────────────────────
+  onProgress?.('Generando PDF traducido…');
 
   const { PDFDocument, rgb } = await import('pdf-lib');
+  const newDoc = await PDFDocument.create();
+  newDoc.registerFontkit(fontkit);
+  const font = await newDoc.embedFont(fontBytes, { subset: true });
 
-  let pdfLibDoc;
-  try {
-    pdfLibDoc = await PDFDocument.load(bufferForPdfLib, { ignoreEncryption: true });
-  } catch (err) {
-    throw new Error(`No se puede modificar el PDF: ${err.message}`);
-  }
+  // Create one blank white page per original page, same dimensions
+  const pdfPages = pageDimensions.map(({ width, height }) => {
+    const page = newDoc.addPage([width, height]);
+    page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(1, 1, 1) });
+    return page;
+  });
 
-  pdfLibDoc.registerFontkit(fontkit);
-  const font  = await pdfLibDoc.embedFont(fontBytes, { subset: true });
-  const pages = pdfLibDoc.getPages();
-
+  // Draw each translated block at the original coordinates
   for (let i = 0; i < textBlocks.length; i++) {
     const block = textBlocks[i];
-    const page  = pages[block.pageIndex];
+    const page  = pdfPages[block.pageIndex];
     if (!page) continue;
 
     const tStr = String(translatedStrings[i] ?? block.str).trim();
     if (!tStr) continue;
 
-    // Scale font size down only if the translated text overflows the block width
+    // Shrink font size proportionally if translated text overflows original width
     let finalSize = block.fontSize;
     if (block.width > 0) {
       const tw = font.widthOfTextAtSize(tStr, finalSize);
@@ -185,31 +190,20 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
       }
     }
 
-    const coverWidth = block.width > 0
-      ? block.width
-      : font.widthOfTextAtSize(block.str, block.fontSize);
-
-    // Cover original text with a white rectangle
-    page.drawRectangle({
-      x: block.x - 1,
-      y: block.y - 1,
-      width:  coverWidth + 4,
-      height: block.fontSize + 3,
-      color: rgb(1, 1, 1),
-      opacity: 1,
-    });
-
-    // Draw the entire translated block as one string — font handles kerning
-    page.drawText(tStr, {
-      x:    block.x,
-      y:    block.y,
-      size: finalSize,
-      font,
-      color: rgb(0, 0, 0),
-    });
+    try {
+      page.drawText(tStr, {
+        x:    block.x,
+        y:    block.y,
+        size: finalSize,
+        font,
+        color: rgb(0, 0, 0),
+      });
+    } catch {
+      // Skip blocks with out-of-bounds coordinates or unsupported characters
+    }
   }
 
-  const bytes = await pdfLibDoc.save();
+  const bytes = await newDoc.save();
   return {
     blob: new Blob([bytes], { type: 'application/pdf' }),
     translatedText: translatedStrings.filter(Boolean).join(' '),
@@ -217,7 +211,6 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
 }
 
 // ── Plain-text → PDF with Unicode font ───────────────────────────────────────
-// Used by TranslatorAgent when the source is TXT/MD (no existing PDF structure).
 
 export async function buildTextPdf(text, targetLang) {
   const fontBytes = await fetchFontBytes(FONT_PATH[targetLang] ?? DEFAULT_FONT);
