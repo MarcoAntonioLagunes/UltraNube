@@ -49,6 +49,11 @@ export default function ContextMenu({
           </button>
         )}
 
+        <div className={styles.divider} />
+        <button className={styles.optionDanger} onClick={handle(onDelete)}>
+          <span className={styles.optionIcon}>🗑️</span> Eliminar
+        </button>
+
         {isFile && (
           <>
             <div className={styles.divider} />
@@ -77,11 +82,6 @@ export default function ContextMenu({
         <div className={styles.divider} />
         <button className={styles.optionOrganize} onClick={handle(onOrganize)}>
           <span className={styles.optionIcon}>🗂️</span> Organizar con IA
-        </button>
-
-        <div className={styles.divider} />
-        <button className={styles.optionDanger} onClick={handle(onDelete)}>
-          <span className={styles.optionIcon}>🗑️</span> Eliminar
         </button>
       </div>
     </div>
