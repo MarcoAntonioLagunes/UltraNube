@@ -74,6 +74,7 @@ export default function HomeScreen() {
   const [activity,  setActivity]  = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [search,    setSearch]    = useState('');
+  const [clearingActivity, setClearingActivity] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -109,6 +110,23 @@ export default function HomeScreen() {
   const runSearch = () => {
     const q = search.trim();
     navigate('/files', { state: { initialSearch: q } });
+  };
+
+  const handleClearActivity = async () => {
+    if (!confirm('¿Borrar todo el historial de actividad?')) return;
+    setClearingActivity(true);
+    try {
+      await api.clearActivity();
+      setActivity([]);
+    } catch { /* non-critical */ }
+    finally { setClearingActivity(false); }
+  };
+
+  const handleDeleteActivity = async (id) => {
+    try {
+      await api.deleteActivity(id);
+      setActivity(prev => prev.filter(a => a._id !== id));
+    } catch { /* non-critical */ }
   };
 
   return (
@@ -227,23 +245,40 @@ export default function HomeScreen() {
 
         {/* Activity timeline */}
         <div className={styles.panel}>
-          <h3 className={styles.panelTitle}>⚡ Actividad reciente</h3>
+          <div className={styles.panelHeader}>
+            <h3 className={styles.panelTitle}>⚡ Actividad reciente</h3>
+            {activity.length > 0 && (
+              <button
+                className={styles.clearBtn}
+                onClick={handleClearActivity}
+                disabled={clearingActivity}
+                title="Borrar todo el historial"
+              >
+                🗑️ Limpiar
+              </button>
+            )}
+          </div>
           {loading ? (
             <div className={styles.emptyTimeline}>Cargando...</div>
           ) : activity.length === 0 ? (
             <div className={styles.emptyTimeline}>Sin actividad reciente</div>
           ) : (
             <div className={styles.timeline}>
-              {activity.map((item, i) => {
+              {activity.map((item) => {
                 const meta = ACTION_META[item.action] || { icon: '📌', label: item.action };
                 return (
-                  <div key={i} className={styles.timelineItem}>
+                  <div key={item._id} className={styles.timelineItem}>
                     <div className={styles.timelineIcon}>{meta.icon}</div>
                     <div className={styles.timelineContent}>
                       <p className={styles.timelineLabel}>{item.label}</p>
                       <p className={styles.timelineAction}>{meta.label}</p>
                     </div>
                     <span className={styles.timelineTime}>{relativeTime(item.createdAt)}</span>
+                    <button
+                      className={styles.deleteItemBtn}
+                      onClick={() => handleDeleteActivity(item._id)}
+                      title="Eliminar este registro"
+                    >✕</button>
                   </div>
                 );
               })}

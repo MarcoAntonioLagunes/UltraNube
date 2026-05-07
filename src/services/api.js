@@ -284,6 +284,22 @@ const api = {
     }
   },
 
+  async clearActivity() {
+    try {
+      await apiClient.delete('/api/activities');
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  },
+
+  async deleteActivity(id) {
+    try {
+      await apiClient.delete(`/api/activities/${id}`);
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  },
+
   async getTypeBreakdown() {
     try {
       const res = await apiClient.get('/api/dashboard/type-breakdown');
