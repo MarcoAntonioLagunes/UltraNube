@@ -1,47 +1,49 @@
-// src/components/agents/TranslatorAgent.jsx
-import { useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import styles from './TranslatorAgent.module.css';
 import { extractTextFromBlob, translateText } from '../../services/anthropicService';
 import api from '../../services/api';
+import Toast from '../Toast';
 
 const LANGUAGES = [
-  'Inglés', 'Español', 'Portugués', 'Francés', 'Alemán', 'Italiano',
-  'Japonés', 'Chino (Simplificado)', 'Ruso', 'Árabe', 'Coreano',
+  { name: 'Inglés',    flag: '🇺🇸' },
+  { name: 'Español',   flag: '🇲🇽' },
+  { name: 'Portugués', flag: '🇧🇷' },
+  { name: 'Francés',   flag: '🇫🇷' },
+  { name: 'Alemán',    flag: '🇩🇪' },
+  { name: 'Italiano',  flag: '🇮🇹' },
+  { name: 'Japonés',   flag: '🇯🇵' },
+  { name: 'Chino',     flag: '🇨🇳' },
+  { name: 'Ruso',      flag: '🇷🇺' },
+  { name: 'Árabe',     flag: '🇸🇦' },
+  { name: 'Coreano',   flag: '🇰🇷' },
+  { name: 'Holandés',  flag: '🇳🇱' },
 ];
+
+const THINKING_MSGS = [
+  'Extrayendo texto...',
+  'Procesando con IA...',
+  'Traduciendo...',
+  'Revisando calidad...',
+  'Guardando en la nube...',
+];
+
+const HISTORY_KEY = 'ultranube_translator_history';
+
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; }
+  catch { return []; }
+}
+function saveHistory(entry) {
+  const h = loadHistory();
+  localStorage.setItem(HISTORY_KEY, JSON.stringify([entry, ...h].slice(0, 3)));
+}
 
 function buildOutputName(originalName) {
   const parts = originalName.split('.');
   const ext = parts.length > 1 ? parts.pop() : '';
   const base = parts.join('.');
-  let outputExt;
-  if (ext === 'pdf') outputExt = 'pdf';
-  else if (['txt', 'md'].includes(ext)) outputExt = ext;
-  else outputExt = 'txt';
+  const outputExt = ext === 'pdf' ? 'pdf' : ['txt', 'md'].includes(ext) ? ext : 'txt';
   return `${base}_traducido.${outputExt}`;
-}
-
-async function buildPdfBlob(text) {
-  const { default: jsPDF } = await import('jspdf');
-  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-  const margin = 20;
-  const maxWidth = doc.internal.pageSize.getWidth() - margin * 2;
-  const lineHeight = 6;
-  const pageHeight = doc.internal.pageSize.getHeight();
-
-  doc.setFontSize(11);
-  const lines = doc.splitTextToSize(text, maxWidth);
-  let y = margin;
-
-  for (const line of lines) {
-    if (y + lineHeight > pageHeight - margin) {
-      doc.addPage();
-      y = margin;
-    }
-    doc.text(line, margin, y);
-    y += lineHeight;
-  }
-
-  return doc.output('blob');
 }
 
 function swapExt(name, newExt) {
@@ -61,65 +63,98 @@ function triggerBlobDownload(blob, fileName) {
 
 export default function TranslatorAgent({ file, folderId, onClose, onSuccess }) {
   const [targetLanguage, setTargetLanguage] = useState('Inglés');
-  const [step, setStep] = useState('select'); // select | loading | done | error
-  const [error, setError] = useState('');
-  const [newFileName, setNewFileName] = useState('');
+  const [step, setStep]                     = useState('select');
+  const [error, setError]                   = useState('');
+  const [newFileName, setNewFileName]       = useState('');
   const [translatedText, setTranslatedText] = useState('');
-  const [loadingMessage, setLoadingMessage] = useState('');
   const [translatedPdfBlob, setTranslatedPdfBlob] = useState(null);
+  const [progress, setProgress]             = useState(0);
+  const [thinkingIdx, setThinkingIdx]       = useState(0);
+  const [copied, setCopied]                 = useState(false);
+  const [toast, setToast]                   = useState(null);
+  const [history, setHistory]               = useState(loadHistory);
+  const [showHistory, setShowHistory]       = useState(false);
+  const intervalRef  = useRef(null);
+  const progressRef  = useRef(null);
 
   const sourceExt = file.name.split('.').pop().toLowerCase();
+
+  useEffect(() => {
+    if (step === 'loading') {
+      intervalRef.current = setInterval(
+        () => setThinkingIdx(i => (i + 1) % THINKING_MSGS.length),
+        2000
+      );
+      setProgress(8);
+      progressRef.current = setInterval(() => {
+        setProgress(p => (p < 85 ? p + Math.random() * 4 : p));
+      }, 600);
+    }
+    return () => {
+      clearInterval(intervalRef.current);
+      clearInterval(progressRef.current);
+    };
+  }, [step]);
 
   const handleTranslate = async () => {
     setStep('loading');
     setError('');
-    setLoadingMessage('Iniciando…');
+    setProgress(0);
+    setThinkingIdx(0);
 
     try {
       const blob = await api.getFileBlob(file.id);
       const outputName = buildOutputName(file.name);
-
       let uploadBlob, mimeType, textForState, pdfBlobForState = null;
 
       if (sourceExt === 'pdf') {
         const { translatePdfWithLayout } = await import('../../services/pdfTranslationService');
-        const result = await translatePdfWithLayout(blob, targetLanguage, setLoadingMessage);
+        const result = await translatePdfWithLayout(blob, targetLanguage, () => {});
         uploadBlob = result.blob;
         mimeType = 'application/pdf';
         textForState = result.translatedText;
         pdfBlobForState = result.blob;
       } else {
-        setLoadingMessage('Extrayendo texto del archivo…');
         const text = await extractTextFromBlob(blob, file.name);
         if (!text.trim()) throw new Error('El archivo está vacío o no se pudo extraer su texto');
-        setLoadingMessage(`Traduciendo al ${targetLanguage}…`);
         textForState = await translateText({ text, targetLang: targetLanguage, fileName: file.name });
         uploadBlob = new Blob([textForState], { type: 'text/plain' });
         mimeType = 'text/plain';
       }
 
-      setLoadingMessage('Guardando en la nube…');
-      const fileObj = new File([uploadBlob], outputName, { type: mimeType });
-      await api.uploadFileAsync(fileObj, folderId);
+      await api.uploadFileAsync(new File([uploadBlob], outputName, { type: mimeType }), folderId);
 
+      setProgress(100);
       setTranslatedText(textForState);
       setTranslatedPdfBlob(pdfBlobForState);
       setNewFileName(outputName);
+
+      const lang = LANGUAGES.find(l => l.name === targetLanguage);
+      saveHistory({ fileName: file.name, targetLanguage, flag: lang?.flag || '🌐', date: new Date().toLocaleDateString('es-MX') });
+      setHistory(loadHistory());
+      setToast({ message: `${lang?.flag || '🌐'} Traducción completada`, type: 'success' });
       setStep('done');
       onSuccess?.();
     } catch (e) {
       setError(e.message || 'Error desconocido durante la traducción');
+      setToast({ message: 'Error en la traducción', type: 'error' });
       setStep('error');
     }
   };
 
+  const handleCopy = async () => {
+    if (!translatedText) return;
+    await navigator.clipboard.writeText(translatedText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   const handleDownloadPdf = async () => {
-    // For PDFs: reuse the layout-preserving blob we already built
     if (translatedPdfBlob) {
       triggerBlobDownload(translatedPdfBlob, swapExt(newFileName, 'pdf'));
+      setToast({ message: 'PDF descargado', type: 'success' });
       return;
     }
-    // For txt/md: generate a clean PDF from the translated text
     const { default: jsPDF } = await import('jspdf');
     const doc = new jsPDF({ unit: 'mm', format: 'a4' });
     const margin = 15;
@@ -128,117 +163,174 @@ export default function TranslatorAgent({ file, folderId, onClose, onSuccess }) 
     const pageHeight = doc.internal.pageSize.getHeight();
     const lines = doc.splitTextToSize(translatedText, maxWidth);
     let y = margin;
-    lines.forEach((line) => {
-      if (y + lineHeight > pageHeight - margin) {
-        doc.addPage();
-        y = margin;
-      }
+    lines.forEach(line => {
+      if (y + lineHeight > pageHeight - margin) { doc.addPage(); y = margin; }
       doc.text(line, margin, y);
       y += lineHeight;
     });
     doc.save(swapExt(newFileName, 'pdf'));
+    setToast({ message: 'PDF descargado', type: 'success' });
   };
 
   const handleDownloadDocx = async () => {
     const { Document, Paragraph, TextRun, Packer } = await import('docx');
-    const paragraphs = translatedText.split('\n').map(
-      (line) => new Paragraph({ children: [new TextRun(line)] })
-    );
+    const paragraphs = translatedText.split('\n').map(line => new Paragraph({ children: [new TextRun(line)] }));
     const doc = new Document({ sections: [{ properties: {}, children: paragraphs }] });
     const blob = await Packer.toBlob(doc);
     triggerBlobDownload(blob, swapExt(newFileName, 'docx'));
+    setToast({ message: 'Word descargado', type: 'success' });
   };
 
+  const selectedLang = LANGUAGES.find(l => l.name === targetLanguage);
+
   return (
-    <div className={styles.overlay} onMouseDown={onClose}>
-      <div className={styles.dialog} onMouseDown={(e) => e.stopPropagation()}>
-        <div className={styles.header}>
-          <span className={styles.headerIcon}>🌐</span>
-          <div className={styles.headerText}>
-            <h2>Traducir con IA</h2>
-            <p className={styles.fileName}>{file.name}</p>
+    <>
+      <div className={styles.backdrop} onClick={onClose} />
+      <div className={styles.panel}>
+
+        {/* Header */}
+        <div className={styles.panelHeader}>
+          <div className={styles.panelTitleWrap}>
+            <span className={styles.panelIcon}>🌐</span>
+            <div>
+              <h2 className={styles.panelTitle}>Traductor IA</h2>
+              <p className={styles.panelFile} title={file.name}>{file.name}</p>
+            </div>
           </div>
-          <button className={styles.closeBtn} onClick={onClose}>✕</button>
+          <div className={styles.headerActions}>
+            <button
+              className={`${styles.iconBtn} ${showHistory ? styles.iconBtnActive : ''}`}
+              onClick={() => setShowHistory(v => !v)}
+              title="Historial"
+            >🕐</button>
+            <button className={styles.closeBtn} onClick={onClose}>✕</button>
+          </div>
         </div>
 
-        {step === 'select' && (
-          <>
-            <div className={styles.body}>
-              <label className={styles.label}>Idioma de destino</label>
-              <select
-                className={styles.select}
-                value={targetLanguage}
-                onChange={(e) => setTargetLanguage(e.target.value)}
-              >
-                {LANGUAGES.map((lang) => (
-                  <option key={lang} value={lang}>{lang}</option>
+        {/* History drawer */}
+        {showHistory && (
+          <div className={styles.historyPanel}>
+            <p className={styles.historyTitle}>Últimas traducciones</p>
+            {history.length === 0
+              ? <p className={styles.historyEmpty}>Sin historial aún</p>
+              : history.map((h, i) => (
+                <div key={i} className={styles.historyItem}>
+                  <span className={styles.historyFile}>📄 {h.fileName}</span>
+                  <div className={styles.historyMeta}>
+                    <span className={styles.historyFlag}>{h.flag}</span>
+                    <span className={styles.historyLang}>{h.targetLanguage}</span>
+                    <span className={styles.historyDate}>{h.date}</span>
+                  </div>
+                </div>
+              ))
+            }
+          </div>
+        )}
+
+        <div className={styles.panelBody}>
+
+          {/* select */}
+          {step === 'select' && (
+            <>
+              <p className={styles.stepLabel}>Selecciona el idioma de destino</p>
+              <div className={styles.langGrid}>
+                {LANGUAGES.map(lang => (
+                  <button
+                    key={lang.name}
+                    className={`${styles.langCard} ${targetLanguage === lang.name ? styles.langCardActive : ''}`}
+                    onClick={() => setTargetLanguage(lang.name)}
+                  >
+                    <span className={styles.langFlag}>{lang.flag}</span>
+                    <span className={styles.langName}>{lang.name}</span>
+                  </button>
                 ))}
-              </select>
+              </div>
               <p className={styles.hint}>
-                Se guardará como <strong>{buildOutputName(file.name)}</strong> en esta misma carpeta.
-                {sourceExt === 'pdf' &&
-                  ' Se preservará la estructura visual del PDF (posiciones, imágenes). Mejor resultado en documentos con fondo blanco y texto en idiomas latinos.'
-                }
+                Se guardará como <strong>{buildOutputName(file.name)}</strong> en esta carpeta.
+                {sourceExt === 'pdf' && ' Se preservará la estructura visual del PDF.'}
+              </p>
+              <div className={styles.actions}>
+                <button className={styles.cancelBtn} onClick={onClose}>Cancelar</button>
+                <button className={styles.primaryBtn} onClick={handleTranslate}>
+                  {selectedLang?.flag} Traducir al {targetLanguage}
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* loading */}
+          {step === 'loading' && (
+            <div className={styles.loadingState}>
+              <div className={styles.pulseWrap}>
+                <div className={styles.pulseRing} />
+                <div className={styles.pulseRing} style={{ animationDelay: '0.5s' }} />
+                <div className={styles.pulseRing} style={{ animationDelay: '1s' }} />
+                <div className={styles.pulseCore}>{selectedLang?.flag || '🌐'}</div>
+              </div>
+              <p className={styles.thinkingMsg}>{THINKING_MSGS[thinkingIdx]}</p>
+              <div className={styles.typingDots}>
+                <span className={styles.dot} />
+                <span className={styles.dot} />
+                <span className={styles.dot} />
+              </div>
+              <div className={styles.progressTrack}>
+                <div className={styles.progressFill} style={{ width: `${progress}%` }} />
+              </div>
+              <p className={styles.progressLabel}>{Math.round(progress)}%</p>
+              <p className={styles.hint}>
+                {sourceExt === 'pdf'
+                  ? 'La traducción de PDFs puede tardar 1–3 minutos.'
+                  : 'Procesando con IA. Puede tomar unos segundos.'}
               </p>
             </div>
-            <div className={styles.footer}>
-              <button className={styles.cancelBtn} onClick={onClose}>Cancelar</button>
-              <button className={styles.primaryBtn} onClick={handleTranslate}>
-                Traducir →
-              </button>
-            </div>
-          </>
-        )}
+          )}
 
-        {step === 'loading' && (
-          <div className={styles.body}>
-            <div className={styles.spinnerWrap}>
-              <div className={styles.spinner} />
+          {/* done */}
+          {step === 'done' && (
+            <div className={styles.doneState}>
+              <div className={styles.doneIcon}>✅</div>
+              <p className={styles.doneTitle}>¡Traducción completada!</p>
+              <p className={styles.hint}>
+                El archivo <strong>{newFileName}</strong> ya está disponible en esta carpeta.
+              </p>
+              {translatedText && (
+                <div className={styles.previewBox}>
+                  <div className={styles.previewHeader}>
+                    <span className={styles.previewLabel}>Vista previa</span>
+                    <button className={styles.copyBtn} onClick={handleCopy}>
+                      {copied ? '✅ Copiado' : '📋 Copiar'}
+                    </button>
+                  </div>
+                  <p className={styles.previewText}>
+                    {translatedText.slice(0, 320)}{translatedText.length > 320 ? '…' : ''}
+                  </p>
+                </div>
+              )}
+              <div className={styles.downloadRow}>
+                <button className={styles.downloadBtn} onClick={handleDownloadPdf}>📄 PDF</button>
+                <button className={styles.downloadBtn} onClick={handleDownloadDocx}>📝 Word</button>
+              </div>
+              <button className={styles.primaryBtn} style={{ width: '100%' }} onClick={onClose}>Cerrar</button>
             </div>
-            <p className={styles.loadingText}>{loadingMessage || `Traduciendo al ${targetLanguage}…`}</p>
-            <p className={styles.hint}>
-              {sourceExt === 'pdf'
-                ? 'La traducción de PDFs puede tardar 1–3 minutos según el número de páginas.'
-                : 'Extrayendo texto y procesando con IA. Puede tomar unos segundos.'}
-            </p>
-          </div>
-        )}
+          )}
 
-        {step === 'done' && (
-          <div className={styles.body}>
-            <div className={styles.resultIcon}>✅</div>
-            <p className={styles.resultTitle}>¡Traducción completada!</p>
-            <p className={styles.hint}>
-              El archivo <strong>{newFileName}</strong> ya está disponible en esta carpeta.
-            </p>
-            <div className={styles.downloadRow}>
-              <button className={styles.downloadBtn} onClick={handleDownloadPdf}>
-                <span>📄</span> Descargar como PDF
-              </button>
-              <button className={styles.downloadBtn} onClick={handleDownloadDocx}>
-                <span>📝</span> Descargar como Word
-              </button>
+          {/* error */}
+          {step === 'error' && (
+            <div className={styles.errorState}>
+              <span className={styles.errorIcon}>⚠️</span>
+              <p className={styles.errorText}>{error}</p>
+              <div className={styles.actions}>
+                <button className={styles.cancelBtn} onClick={onClose}>Cerrar</button>
+                <button className={styles.primaryBtn} onClick={() => { setStep('select'); setProgress(0); }}>
+                  Reintentar
+                </button>
+              </div>
             </div>
-            <div className={styles.footer}>
-              <button className={styles.primaryBtn} onClick={onClose}>Cerrar</button>
-            </div>
-          </div>
-        )}
-
-        {step === 'error' && (
-          <div className={styles.body}>
-            <div className={styles.resultIcon}>⚠️</div>
-            <p className={styles.resultTitle} style={{ color: '#ff7088' }}>Error en la traducción</p>
-            <p className={styles.errorDetail}>{error}</p>
-            <div className={styles.footer}>
-              <button className={styles.cancelBtn} onClick={onClose}>Cerrar</button>
-              <button className={styles.primaryBtn} onClick={() => setStep('select')}>
-                Reintentar
-              </button>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
-    </div>
+
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+    </>
   );
 }
