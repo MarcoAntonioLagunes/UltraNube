@@ -2,28 +2,15 @@
 //
 // Pipeline:
 //   1. api.extractPdfText(blob)  — backend extracts plain text (pdftotext / Claude API)
-//   2. batchTranslateTexts       — Claude translates each page
+//   2. translatePages            — TRANSLATOR_PROMPT with 8192 tokens, chunked for long docs
 //   3. buildTextPdf              — brand-new A4 PDF, NotoSans, plain readable text
-//
-// Note: { subset: true } is intentionally NOT used in embedFont.
-// Font subsetting in @pdf-lib/fontkit remaps glyph IDs incorrectly for WOFF fonts,
-// producing garbled output (vowels stripped, wrong characters). Full font embedding
-// produces larger files but renders every character correctly.
 
 import fontkit from '@pdf-lib/fontkit';
-import { batchTranslateTexts } from './anthropicService';
+import { translateText } from './anthropicService';
 import api from './api';
 
-const FONT_PATH = {
-  'Inglés':    '/fonts/NotoSans-Regular.woff',
-  'Español':   '/fonts/NotoSans-Regular.woff',
-  'Portugués': '/fonts/NotoSans-Regular.woff',
-  'Francés':   '/fonts/NotoSans-Regular.woff',
-  'Alemán':    '/fonts/NotoSans-Regular.woff',
-  'Italiano':  '/fonts/NotoSans-Regular.woff',
-  'Holandés':  '/fonts/NotoSans-Regular.woff',
-};
-const DEFAULT_FONT = '/fonts/NotoSans-Regular.woff';
+const FONT_PATH  = '/fonts/NotoSans-Regular.woff';
+const CHUNK_CHARS = 40_000; // stay under the 50K MAX_CHARS limit in translateText
 
 const _fontCache = new Map();
 async function fetchFontBytes(path) {
@@ -35,6 +22,42 @@ async function fetchFontBytes(path) {
   return buf;
 }
 
+// Split pages into chunks ≤ CHUNK_CHARS, translate each chunk, rejoin.
+async function translatePages(pages, targetLang) {
+  console.log(`[PDF translator] translatePages: ${pages.length} página(s), idioma: ${targetLang}`);
+  console.log(`[PDF translator] página 1 (primeros 200 chars): ${pages[0]?.slice(0, 200)}`);
+
+  // Group consecutive pages into chunks that fit within the token budget
+  const chunks = [];
+  let current  = '';
+  for (const page of pages) {
+    const candidate = current ? `${current}\n\n${page}` : page;
+    if (candidate.length > CHUNK_CHARS && current) {
+      chunks.push(current);
+      current = page;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) chunks.push(current);
+
+  console.log(`[PDF translator] dividido en ${chunks.length} chunk(s)`);
+
+  const translatedChunks = [];
+  for (let i = 0; i < chunks.length; i++) {
+    console.log(`[PDF translator] traduciendo chunk ${i + 1}/${chunks.length} (${chunks[i].length} chars)…`);
+    const result = await translateText({
+      text:       chunks[i],
+      targetLang,
+      fileName:   'documento.pdf',
+    });
+    console.log(`[PDF translator] chunk ${i + 1} resultado (primeros 200 chars): ${result?.slice(0, 200)}`);
+    translatedChunks.push(result);
+  }
+
+  return translatedChunks.join('\n\n');
+}
+
 export async function translatePdfWithLayout(blob, targetLang, onProgress) {
   // 1. Extract text via backend
   onProgress?.('Extrayendo texto del PDF…');
@@ -42,6 +65,7 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
   try {
     const result = await api.extractPdfText(blob);
     pages = result.pages;
+    console.log(`[PDF translator] extracción OK: ${pages?.length} página(s)`);
   } catch (err) {
     throw new Error(`No se pudo extraer el texto del PDF: ${err.message}`);
   }
@@ -55,8 +79,8 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
 
   // 2. Translate
   onProgress?.(`Traduciendo ${pages.length} página(s) al ${targetLang}…`);
-  const translatedPages = await batchTranslateTexts({ texts: pages, targetLang });
-  const translatedText  = translatedPages.filter(Boolean).join('\n\n');
+  const translatedText = await translatePages(pages, targetLang);
+  console.log(`[PDF translator] traducción completa: ${translatedText?.length} chars`);
 
   // 3. Build clean PDF
   onProgress?.('Generando PDF limpio…');
@@ -65,9 +89,8 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
   return { blob: pdfBlob, translatedText };
 }
 
-export async function buildTextPdf(text, targetLang) {
-  const fontPath  = FONT_PATH[targetLang] ?? DEFAULT_FONT;
-  const fontBytes = await fetchFontBytes(fontPath);
+export async function buildTextPdf(text, _targetLang) {
+  const fontBytes = await fetchFontBytes(FONT_PATH);
 
   const { PDFDocument, rgb } = await import('pdf-lib');
   const doc = await PDFDocument.create();
@@ -83,7 +106,6 @@ export async function buildTextPdf(text, targetLang) {
   const LINE_H  = FONT_SZ * 1.6;
   const MAX_W   = PAGE_W - MARGIN * 2;
 
-  // Word-wrap each paragraph into display lines
   const allLines = [];
   for (const para of text.split('\n')) {
     if (!para.trim()) { allLines.push(''); continue; }
