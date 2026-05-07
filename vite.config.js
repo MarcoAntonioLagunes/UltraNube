@@ -6,5 +6,12 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5174,
+    proxy: {
+      // En dev, /api/* se reenvía al backend local sin pasar por CORS
+      '/api': {
+        target: 'http://localhost:4012',
+        changeOrigin: true,
+      },
+    },
   },
 })
