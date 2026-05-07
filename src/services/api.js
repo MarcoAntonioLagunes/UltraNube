@@ -320,9 +320,14 @@ const api = {
     try {
       const form = new FormData();
       form.append('pdf', blob, 'file.pdf');
-      const res = await apiClient.post('/api/files/extract-pdf-text', form);
+      const res = await apiClient.post('/api/files/extract-pdf-text', form, {
+        timeout: 130_000, // backend has 120 s hard limit; give 10 s margin
+      });
       return res.data; // { text, pages }
     } catch (error) {
+      if (error.code === 'ECONNABORTED') {
+        throw new Error('El servidor tardó demasiado en responder. Intenta con un PDF más pequeño.');
+      }
       throw new Error(getErrorMessage(error));
     }
   },
