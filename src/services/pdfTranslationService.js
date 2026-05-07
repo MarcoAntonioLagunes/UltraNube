@@ -25,11 +25,15 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
   const pdfjsLib = pdfjs.default ?? pdfjs;
   pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
-  const buffer = await blob.arrayBuffer();
+  const rawBuffer = await blob.arrayBuffer();
+  // pdfjs transfers its buffer to the Web Worker (detaching it), so pdf-lib
+  // needs its own independent copy obtained before that transfer happens.
+  const bufferForPdfjs  = rawBuffer.slice(0);
+  const bufferForPdfLib = rawBuffer.slice(0);
 
   let viewerDoc;
   try {
-    viewerDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+    viewerDoc = await pdfjsLib.getDocument({ data: new Uint8Array(bufferForPdfjs) }).promise;
   } catch (err) {
     throw new Error(`No se puede leer el PDF: ${err.message}`);
   }
@@ -82,7 +86,7 @@ export async function translatePdfWithLayout(blob, targetLang, onProgress) {
 
   let pdfLibDoc;
   try {
-    pdfLibDoc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    pdfLibDoc = await PDFDocument.load(bufferForPdfLib, { ignoreEncryption: true });
   } catch (err) {
     throw new Error(`No se puede modificar el PDF: ${err.message}`);
   }
