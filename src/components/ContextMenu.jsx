@@ -9,7 +9,8 @@ function getExt(name) {
 
 export default function ContextMenu({
   x, y, item, onClose,
-  onRename, onDownload, onDelete, onTranslate, onAnalyze,
+  onRename, onDownload, onDelete,
+  onTranslate, onAnalyze, onPresent, onOrganize,
 }) {
   const isFile = item.type === 'file';
   const ext = getExt(item.name);
@@ -21,11 +22,15 @@ export default function ContextMenu({
     onClose();
   };
 
-  // Keep the menu inside the viewport
-  const menuHeight = isFile ? (aiSupported ? 310 : 160) : 120;
+  // Compute menu height for viewport clamping
+  const aiFileItems = aiSupported ? 3 : 0; // translate + analyze + present
+  const menuHeight  = isFile
+    ? 80 + (aiFileItems * 38) + (aiSupported ? 0 : 24) + 38 + 38 + 38 + 38
+    : 160;
+
   const style = {
-    top: Math.min(y, window.innerHeight - menuHeight - 10),
-    left: Math.min(x, window.innerWidth - 230),
+    top:  Math.min(y, window.innerHeight - menuHeight - 10),
+    left: Math.min(x, window.innerWidth - 240),
   };
 
   return (
@@ -57,6 +62,9 @@ export default function ContextMenu({
                 <button className={styles.optionAi} onClick={handle(onAnalyze)}>
                   <span className={styles.optionIcon}>⚖️</span> Analizar con Abogado IA
                 </button>
+                <button className={styles.optionAi} onClick={handle(onPresent)}>
+                  <span className={styles.optionIcon}>📊</span> Generar presentación
+                </button>
               </>
             ) : (
               <div className={styles.aiUnsupported}>
@@ -65,6 +73,11 @@ export default function ContextMenu({
             )}
           </>
         )}
+
+        <div className={styles.divider} />
+        <button className={styles.optionOrganize} onClick={handle(onOrganize)}>
+          <span className={styles.optionIcon}>🗂️</span> Organizar con IA
+        </button>
 
         <div className={styles.divider} />
         <button className={styles.optionDanger} onClick={handle(onDelete)}>

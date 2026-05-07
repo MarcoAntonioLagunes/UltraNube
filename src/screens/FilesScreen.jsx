@@ -10,6 +10,8 @@ import ContextMenu from '../components/ContextMenu';
 import TranslatorAgent from '../components/agents/TranslatorAgent';
 import LawyerAgent from '../components/agents/LawyerAgent';
 import CopilotAgent from '../components/agents/CopilotAgent';
+import PresentationAgent from '../components/agents/PresentationAgent';
+import OrganizerAgent from '../components/agents/OrganizerAgent';
 import FilePreviewModal from '../components/FilePreviewModal';
 
 const ANALYZABLE_EXTS = ['txt', 'pdf', 'docx', 'md'];
@@ -71,6 +73,8 @@ export default function FilesScreen() {
   const [contextMenu, setContextMenu] = useState(null); // { x, y, item }
   const [translatorFile, setTranslatorFile] = useState(null);
   const [lawyerFile, setLawyerFile] = useState(null);
+  const [presentationFile, setPresentationFile] = useState(null);
+  const [organizerOpen, setOrganizerOpen] = useState(false);
   const [previewFile, setPreviewFile] = useState(null);
 
   // Close context menu when Escape is pressed
@@ -310,6 +314,7 @@ export default function FilesScreen() {
           <input type="file" onChange={handleFileUpload} disabled={uploading} />
         </label>
         <button onClick={openCreateModal} className={styles.primaryButton}>Crear carpeta</button>
+        <button onClick={() => setOrganizerOpen(true)} className={styles.primaryButton}>🗂️ Organizar con IA</button>
       </div>
 
       {loading ? (
@@ -373,7 +378,10 @@ export default function FilesScreen() {
                         <button onClick={() => handleDownload(item)} className={styles.actionBtn}>Descargar</button>
                       )}
                       {item.type === 'file' && ANALYZABLE_EXTS.includes(getExt(item.name)) && (
-                        <button onClick={() => setLawyerFile(item)} className={styles.actionBtnAi}>Analizar</button>
+                        <>
+                          <button onClick={() => setLawyerFile(item)} className={styles.actionBtnAi}>Analizar</button>
+                          <button onClick={() => setPresentationFile(item)} className={styles.actionBtnAi}>Presentación</button>
+                        </>
                       )}
                       <button onClick={() => handleDelete(item)} className={styles.actionBtnDanger}>Eliminar</button>
                     </div>
@@ -420,6 +428,8 @@ export default function FilesScreen() {
           onDelete={() => handleDelete(contextMenu.item)}
           onTranslate={() => setTranslatorFile(contextMenu.item)}
           onAnalyze={() => setLawyerFile(contextMenu.item)}
+          onPresent={() => setPresentationFile(contextMenu.item)}
+          onOrganize={() => setOrganizerOpen(true)}
         />
       )}
 
@@ -438,6 +448,24 @@ export default function FilesScreen() {
         <LawyerAgent
           file={lawyerFile}
           onClose={() => setLawyerFile(null)}
+        />
+      )}
+
+      {/* ── Agente 3: Presentación ── */}
+      {presentationFile && (
+        <PresentationAgent
+          file={presentationFile}
+          folderId={currentFolderId}
+          onClose={() => setPresentationFile(null)}
+          onSuccess={() => loadItems(currentFolderId)}
+        />
+      )}
+
+      {/* ── Agente 4: Organizador ── */}
+      {organizerOpen && (
+        <OrganizerAgent
+          onClose={() => setOrganizerOpen(false)}
+          onSuccess={() => loadItems(currentFolderId)}
         />
       )}
 

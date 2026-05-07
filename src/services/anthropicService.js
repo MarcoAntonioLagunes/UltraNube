@@ -5,6 +5,8 @@ import {
   COPILOT_SEARCH_PROMPT,
   COPILOT_SUMMARY_PROMPT,
   BATCH_TRANSLATE_PROMPT,
+  PRESENTATION_PROMPT,
+  ORGANIZER_PROMPT,
 } from '../constants/agentPrompts';
 import api from './api';
 
@@ -87,6 +89,30 @@ export async function summarizeFolderWithAI({ items, folderName }) {
   const userContent = `Carpeta: "${folderName}"\n\nArchivos:\n${JSON.stringify(index)}`;
   const raw = await callClaude(COPILOT_SUMMARY_PROMPT, userContent, 2048);
 
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('La IA devolvió un formato inesperado');
+  return JSON.parse(match[0]);
+}
+
+export async function generatePresentationContent({ text, fileName, slideCount, style, language }) {
+  const truncated = text.slice(0, MAX_CHARS);
+  const userContent = `Nombre del archivo: ${fileName}\nDiapositivas solicitadas: ${slideCount}\nEstilo: ${style}\nIdioma: ${language}\n\nContenido del documento:\n\n${truncated}`;
+  const raw = await callClaude(PRESENTATION_PROMPT, userContent, 6000);
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('La IA devolvió un formato inesperado');
+  return JSON.parse(match[0]);
+}
+
+export async function suggestOrganization({ files }) {
+  const index = files.map(f => ({
+    id: f.id || f._id,
+    name: f.name || f.originalName,
+    size: f.size,
+    folder: f.folder || null,
+    date: f.createdAt,
+  }));
+  const userContent = `Archivos del usuario (${index.length} en total):\n${JSON.stringify(index.slice(0, 300))}`;
+  const raw = await callClaude(ORGANIZER_PROMPT, userContent, 4096);
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('La IA devolvió un formato inesperado');
   return JSON.parse(match[0]);

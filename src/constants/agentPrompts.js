@@ -83,3 +83,63 @@ Responde EXCLUSIVAMENTE con este JSON válido:
 }
 
 Responde SOLO con el JSON.`;
+
+export const PRESENTATION_PROMPT = `Eres un experto en comunicación visual y presentaciones profesionales.
+
+Recibirás el contenido de un documento y debes crear la estructura de una presentación en formato JSON.
+
+Responde EXCLUSIVAMENTE con este JSON válido:
+{
+  "titulo": "Título principal de la presentación",
+  "subtitulo": "Subtítulo o descripción breve de una línea",
+  "diapositivas": [
+    {
+      "numero": 1,
+      "titulo": "Título de la diapositiva",
+      "bullets": ["Punto clave 1", "Punto clave 2", "Punto clave 3"]
+    }
+  ]
+}
+
+Reglas:
+- El número de diapositivas debe coincidir EXACTAMENTE con el solicitado
+- Cada diapositiva debe tener entre 3 y 5 bullets concisos
+- Los bullets son frases cortas e impactantes, NO párrafos
+- Para estilo "Profesional": lenguaje formal, datos precisos, conclusiones estructuradas
+- Para estilo "Creativo": lenguaje dinámico, metáforas, ejemplos vivos, emojis cuando aplique
+- Para estilo "Minimalista": máximo 3 bullets por slide, frases muy cortas y directas
+- El idioma de TODA la presentación debe ser el especificado por el usuario
+- Responde SOLO con el JSON, sin texto antes ni después`;
+
+export const ORGANIZER_PROMPT = `Eres un experto en organización digital y productividad.
+
+Recibirás la lista completa de archivos de un usuario en la nube. Tu tarea es sugerir cómo organizarlos en carpetas lógicas.
+
+Responde EXCLUSIVAMENTE con este JSON válido:
+{
+  "resumen": "Descripción breve de la organización sugerida (1-2 oraciones)",
+  "carpetas": [
+    {
+      "nombre": "Nombre de la carpeta sugerida",
+      "descripcion": "Por qué estos archivos pertenecen aquí",
+      "archivos": ["nombre_exacto_archivo.ext", "otro_archivo.pdf"]
+    }
+  ],
+  "duplicados": [
+    {
+      "descripcion": "Por qué se consideran duplicados o muy similares",
+      "archivos": ["archivo_original.pdf", "archivo_copia.pdf"]
+    }
+  ],
+  "sinCategoria": ["archivo_sin_clasificar.txt"]
+}
+
+Reglas estrictas:
+- Usa nombres de carpetas en español, claros y descriptivos
+- En "archivos" incluye el nombre EXACTO tal como aparece en el índice
+- Un mismo archivo NO puede aparecer en dos carpetas
+- "duplicados" son archivos con nombres muy similares o probable contenido idéntico
+- "sinCategoria" son archivos que no encajan en ninguna carpeta
+- Máximo 8 carpetas sugeridas
+- Si hay pocos archivos, sugiere pocas carpetas (no fuerces categorías vacías)
+- Responde SOLO con el JSON`;

@@ -50,6 +50,7 @@
 
 .option,
 .optionAi,
+.optionOrganize,
 .optionDanger {
   display: flex;
   align-items: center;
@@ -71,6 +72,9 @@
 
 .optionAi { color: #ff8eb5; }
 .optionAi:hover { background: rgba(255, 45, 149, 0.12); color: #ffb3d0; }
+
+.optionOrganize { color: #86efac; }
+.optionOrganize:hover { background: rgba(74, 222, 128, 0.1); color: #bbf7d0; }
 
 .optionDanger { color: #ff7088; }
 .optionDanger:hover { background: rgba(255, 50, 80, 0.12); color: #ffaaba; }

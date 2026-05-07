@@ -231,6 +231,33 @@ const api = {
     } catch (error) { throw new Error(getErrorMessage(error)); }
   },
 
+  async moveFile(fileId, folderId) {
+    try {
+      const res = await apiClient.patch(`/api/files/${fileId}/move`, { folderId: folderId || null });
+      return res.data;
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  },
+
+  async getAllUserFiles() {
+    try {
+      const res = await apiClient.get('/api/files/all');
+      return res.data;
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  },
+
+  async getRecentFiles() {
+    try {
+      const res = await apiClient.get('/api/files/recent/list');
+      return res.data;
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  },
+
   async anthropicProxy(system, messages, maxTokens = 4096) {
     try {
       const res = await apiClient.post('/api/ai/proxy', { system, messages, maxTokens });
