@@ -309,6 +309,13 @@ const api = {
     }
   },
 
+  async getDashboardStats() {
+    try {
+      const res = await apiClient.get('/api/dashboard/stats');
+      return res.data;
+    } catch (error) { throw new Error(getErrorMessage(error)); }
+  },
+
   async uploadFileWithProgress(file, folderId = null, onProgress) {
     try {
       const form = new FormData();

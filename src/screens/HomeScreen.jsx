@@ -80,9 +80,7 @@ export default function HomeScreen() {
     setLoading(true);
     try {
       const [statsRes, storageRes, breakdownRes, recentRes, activityRes] = await Promise.allSettled([
-        fetch(`${import.meta.env.VITE_API_URL || ''}/api/dashboard/stats`, {
-          headers: { Authorization: `Bearer ${localStorage.getItem('ultranube_token')}` },
-        }).then(r => r.json()),
+        api.getDashboardStats(),
         api.getStorageStats(),
         api.getTypeBreakdown(),
         api.getRecentFiles(),
