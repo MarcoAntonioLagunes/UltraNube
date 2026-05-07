@@ -338,16 +338,30 @@ export default function FilesScreen() {
       <CopilotAgent items={items} currentFolderName={currentFolderName} />
 
       <div className={styles.searchRow}>
-        <input
-          type="text"
-          placeholder="Buscar archivos y carpetas"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') runGlobalSearch(); }}
-          className={styles.folderInput}
-        />
-        <button onClick={runGlobalSearch} className={styles.primaryButton}>Buscar</button>
-        <button onClick={handleGoHome} className={styles.secondaryButton}>Limpiar</button>
+        <div className={styles.searchWrap}>
+          <span className={styles.searchIcon}>🔍</span>
+          <input
+            type="text"
+            placeholder="Filtrar archivos y carpetas..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') runGlobalSearch(); }}
+            className={styles.searchInput}
+          />
+          {search && (
+            <button
+              className={styles.searchClearBtn}
+              onClick={() => {
+                setSearch('');
+                if (breadcrumbs[0]?.name?.startsWith('Resultados:')) loadItems(null);
+              }}
+              title="Limpiar búsqueda"
+            >✕</button>
+          )}
+        </div>
+        <button onClick={runGlobalSearch} className={styles.globalSearchBtn} title="Buscar en todas las carpetas">
+          Buscar en toda la nube
+        </button>
       </div>
 
       <div className={styles.actionsRow}>
@@ -414,7 +428,9 @@ export default function FilesScreen() {
 
             {filteredItems.length === 0 ? (
               <div className={styles.messageBox}>
-                {dragOver ? '' : 'No hay archivos ni carpetas aquí. Arrastra archivos para subir.'}
+                {dragOver ? '' : search && items.length > 0
+                  ? `No se encontraron archivos con ese nombre.`
+                  : 'No hay archivos ni carpetas aquí. Arrastra archivos para subir.'}
               </div>
             ) : (
               <div className={styles.itemGrid}>

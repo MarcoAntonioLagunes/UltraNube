@@ -47,6 +47,81 @@
   align-items: center;
 }
 
+/* Wrapper that holds the icon, input and ✕ button as one unit */
+.searchWrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.searchIcon {
+  position: absolute;
+  left: 14px;
+  font-size: 0.95rem;
+  pointer-events: none;
+  line-height: 1;
+  z-index: 1;
+}
+
+.searchInput {
+  width: 100%;
+  padding: 12px 40px 12px 40px; /* room for icon left, ✕ right */
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  color: #f5f5ff;
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color 0.2s, background 0.2s;
+}
+.searchInput:focus {
+  border-color: rgba(255, 45, 149, 0.45);
+  background: rgba(255, 255, 255, 0.07);
+}
+.searchInput::placeholder { color: rgba(255,255,255,0.28); }
+
+.searchClearBtn {
+  position: absolute;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.7rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+  line-height: 1;
+}
+.searchClearBtn:hover {
+  background: rgba(255, 45, 149, 0.25);
+  color: #ff8eb5;
+}
+
+.globalSearchBtn {
+  padding: 12px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.globalSearchBtn:hover {
+  background: rgba(255, 45, 149, 0.1);
+  border-color: rgba(255, 45, 149, 0.3);
+  color: #ff8eb5;
+}
+
+/* Keep .folderInput as alias for any modal inputs still using it */
 .folderInput {
   flex: 1;
   padding: 12px 16px;
@@ -58,7 +133,6 @@
   outline: none;
   transition: border-color 0.2s;
 }
-
 .folderInput:focus { border-color: rgba(255, 45, 149, 0.4); }
 .folderInput::placeholder { color: rgba(255,255,255,0.28); }
 
@@ -473,6 +547,7 @@
 
 @media (max-width: 600px) {
   .searchRow { flex-wrap: wrap; }
+  .globalSearchBtn { width: 100%; }
   .actionsRow { flex-direction: column; align-items: stretch; }
   .itemGrid { grid-template-columns: 1fr; }
   .itemCard:hover .itemActions {
